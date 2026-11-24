@@ -14,7 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"sohopos/internal/platform/apperr"
+	"chloropos/internal/platform/apperr"
 )
 
 func JSON(w http.ResponseWriter, status int, v any) {
@@ -46,22 +46,22 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	slog.ErrorContext(r.Context(), "request failed", "err", err, "method", r.Method, "path", r.URL.Path)
-	Error(w, http.StatusInternalServerError, "internal", "Something went wrong on our side. Try again in a moment.")
+	Error(w, http.StatusInternalServerError, "internal", "Terjadi gangguan di server. Coba lagi sebentar lagi.")
 }
 
 // Decode reads one JSON object: size-capped, JSON content type only, unknown fields rejected.
 func Decode(w http.ResponseWriter, r *http.Request, dst any) error {
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
-		return apperr.Invalid("bad_content_type", "Send the request as JSON.")
+		return apperr.Invalid("bad_content_type", "Kirim permintaan dalam format JSON.")
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		return apperr.Invalid("bad_json", "The request couldn’t be read. Check the fields and try again.")
+		return apperr.Invalid("bad_json", "Permintaan tidak bisa dibaca. Periksa isiannya lalu coba lagi.")
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return apperr.Invalid("bad_json", "The request must contain a single JSON object.")
+		return apperr.Invalid("bad_json", "Permintaan harus berisi satu objek JSON.")
 	}
 	return nil
 }
@@ -69,7 +69,7 @@ func Decode(w http.ResponseWriter, r *http.Request, dst any) error {
 func UUIDParam(r *http.Request, name string) (uuid.UUID, error) {
 	id, err := uuid.Parse(chi.URLParam(r, name))
 	if err != nil {
-		return uuid.Nil, apperr.NotFound("not_found", "Not found.")
+		return uuid.Nil, apperr.NotFound("not_found", "Tidak ditemukan.")
 	}
 	return id, nil
 }

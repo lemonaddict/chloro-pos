@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"sohopos/internal/platform/httpx"
+	"chloropos/internal/platform/httpx"
 )
 
 // RateLimiter is an in-memory token bucket per key. Fine for a single node; swap for a
@@ -56,7 +56,7 @@ func (l *RateLimiter) Middleware(next http.Handler) http.Handler {
 
 func TooManyRequests(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "60")
-	httpx.Error(w, http.StatusTooManyRequests, "rate_limited", "Too many attempts. Wait a minute and try again.")
+	httpx.Error(w, http.StatusTooManyRequests, "rate_limited", "Terlalu banyak percobaan. Tunggu semenit lalu coba lagi.")
 }
 
 func (l *RateLimiter) sweep(ctx context.Context) {

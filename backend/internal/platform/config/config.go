@@ -23,9 +23,9 @@ type Config struct {
 	StaticDir      string
 	ReportTZ       string
 
-	// Optional: creates the first owner when the users table is empty.
-	BootstrapOwnerUsername string
-	BootstrapOwnerPassword string
+	// Optional: creates the platform admin (the company) when no admin exists yet.
+	BootstrapAdminUsername string
+	BootstrapAdminPassword string
 }
 
 func Load() (Config, error) {
@@ -43,9 +43,9 @@ func Load() (Config, error) {
 		CookieSecure:           getBool("COOKIE_SECURE", true),
 		AllowedOrigins:         splitCSV(os.Getenv("ALLOWED_ORIGINS")),
 		StaticDir:              os.Getenv("STATIC_DIR"),
-		ReportTZ:               get("REPORT_TZ", "UTC"),
-		BootstrapOwnerUsername: os.Getenv("BOOTSTRAP_OWNER_USERNAME"),
-		BootstrapOwnerPassword: os.Getenv("BOOTSTRAP_OWNER_PASSWORD"),
+		ReportTZ:               get("REPORT_TZ", "Asia/Jakarta"),
+		BootstrapAdminUsername: first("BOOTSTRAP_ADMIN_USERNAME", "BOOTSTRAP_OWNER_USERNAME"),
+		BootstrapAdminPassword: first("BOOTSTRAP_ADMIN_PASSWORD", "BOOTSTRAP_OWNER_PASSWORD"),
 	}
 	if c.DatabaseURL == "" {
 		return c, errors.New("DATABASE_URL is required")
@@ -57,6 +57,17 @@ func Load() (Config, error) {
 		c.DBMinConns = c.DBMaxConns
 	}
 	return c, nil
+}
+
+// first returns the first variable that is set. The BOOTSTRAP_OWNER_* names still work, so an
+// existing .env keeps starting the app.
+func first(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func get(key, def string) string {

@@ -23,6 +23,11 @@ export async function signIn(username, password) {
   apply(await api.post('/auth/login', { username, password }));
 }
 
+// A kasir signs in with the shop's username and the code the owner gave that kasir, never the owner's password.
+export async function signInCashier(username, code) {
+  apply(await api.post('/auth/login/cashier', { username, code }));
+}
+
 export async function signOut() {
   try {
     await api.post('/auth/logout');

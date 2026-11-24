@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -14,16 +15,28 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
 
-	"sohopos/internal/catalog"
-	"sohopos/internal/identity"
-	"sohopos/internal/platform/auth"
-	"sohopos/internal/platform/config"
-	"sohopos/internal/platform/database"
-	"sohopos/internal/platform/httpx"
-	"sohopos/internal/platform/middleware"
-	"sohopos/internal/reporting"
-	"sohopos/internal/sales"
+	"chloropos/internal/catalog"
+	"chloropos/internal/identity"
+	"chloropos/internal/platform/auth"
+	"chloropos/internal/platform/config"
+	"chloropos/internal/platform/database"
+	"chloropos/internal/platform/httpx"
+	"chloropos/internal/platform/middleware"
+	"chloropos/internal/reporting"
+	"chloropos/internal/sales"
+	"chloropos/internal/settings"
 )
+
+// taxSource lets sales read the tax rules without importing the settings module.
+type taxSource struct{ svc *settings.Service }
+
+func (t taxSource) Tax(ctx context.Context) (sales.TaxConfig, error) {
+	s, err := t.svc.Get(ctx)
+	if err != nil {
+		return sales.TaxConfig{}, err
+	}
+	return sales.TaxConfig{Enabled: s.TaxEnabled, Label: s.TaxLabel, RateBPS: s.TaxRateBPS, Inclusive: s.TaxInclusive}, nil
+}
 
 func New(ctx context.Context, cfg config.Config, pool *pgxpool.Pool) (http.Handler, error) {
 	store := database.NewStore(pool)
@@ -35,21 +48,33 @@ func New(ctx context.Context, cfg config.Config, pool *pgxpool.Pool) (http.Handl
 	loginUserLimit := middleware.NewRateLimiter(ctx, rate.Every(6*time.Second), 10)
 
 	// Modules: repository -> service (use cases) -> handler.
-	identitySvc := identity.NewService(identity.NewPGRepository(store), tokens)
+	identitySvc := identity.NewService(identity.NewPGRepository(store), store, tokens)
 	identityH := identity.NewHandler(identitySvc, cfg.CookieSecure, loginUserLimit)
 	catalogH := catalog.NewHandler(catalog.NewService(catalog.NewPGRepository(store), store))
-	salesH := sales.NewHandler(sales.NewService(sales.NewPGRepository(store), store))
 
-	reportSvc := reporting.NewService(reporting.NewPGRepository(store), cfg.ReportTZ)
+	settingsSvc := settings.NewService(settings.NewPGRepository(store), store)
+	settingsH := settings.NewHandler(settingsSvc)
+
+	salesH := sales.NewHandler(sales.NewService(sales.NewPGRepository(store), store, taxSource{svc: settingsSvc}))
+
+	reportSvc := reporting.NewService(reporting.NewPGRepository(store), store, cfg.ReportTZ)
 	if err := reportSvc.CheckTimezone(ctx); err != nil {
-		return nil, fmt.Errorf("REPORT_TZ %q isn’t a valid time zone name: %w", cfg.ReportTZ, err)
+		return nil, fmt.Errorf("REPORT_TZ %q bukan nama zona waktu yang dikenal PostgreSQL: %w", cfg.ReportTZ, err)
 	}
 	reportH := reporting.NewHandler(reportSvc)
 
-	if cfg.BootstrapOwnerUsername != "" {
-		if err := identitySvc.BootstrapOwner(ctx, cfg.BootstrapOwnerUsername, cfg.BootstrapOwnerPassword); err != nil {
-			return nil, fmt.Errorf("bootstrap owner: %w", err)
+	if cfg.BootstrapAdminUsername != "" {
+		if err := identitySvc.BootstrapAdmin(ctx, cfg.BootstrapAdminUsername, cfg.BootstrapAdminPassword); err != nil {
+			return nil, fmt.Errorf("bootstrap admin: %w", err)
 		}
+	}
+
+	// Row-level security is the backstop that keeps one shop out of another's rows. It does nothing
+	// for a superuser or a BYPASSRLS role, and then only the tenant filter in each query is left.
+	if bypass, err := store.BypassesRLS(ctx); err != nil {
+		slog.Warn("could not check whether the database role bypasses row-level security", "err", err)
+	} else if bypass {
+		slog.Warn("the database role bypasses row-level security: tenant isolation rests on application queries alone. Connect as an ordinary role (see README)")
 	}
 
 	r := chi.NewRouter()
@@ -68,7 +93,7 @@ func New(ctx context.Context, cfg config.Config, pool *pgxpool.Pool) (http.Handl
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := store.Ping(ctx); err != nil {
-			httpx.Error(w, http.StatusServiceUnavailable, "unhealthy", "Database unavailable.")
+			httpx.Error(w, http.StatusServiceUnavailable, "unhealthy", "Basis data tidak tersedia.")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -77,17 +102,26 @@ func New(ctx context.Context, cfg config.Config, pool *pgxpool.Pool) (http.Handl
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(chimw.Timeout(30*time.Second), middleware.NoStore, middleware.OriginCheck(cfg.AllowedOrigins), apiLimit.Middleware)
 		r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
-			httpx.Error(w, http.StatusNotFound, "not_found", "Not found.")
+			httpx.Error(w, http.StatusNotFound, "not_found", "Tidak ditemukan.")
 		})
 
 		identityH.PublicRoutes(r, loginIPLimit.Middleware)
 
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.Authenticate(tokens), middleware.CSRF)
-			identityH.ProtectedRoutes(r)
-			catalogH.Routes(r)
-			salesH.Routes(r)
-			reportH.Routes(r)
+			// SessionValid re-checks the account on each request, so a deactivated kasir or shop is out within seconds.
+			r.Use(middleware.Authenticate(tokens, identitySvc.SessionValid), middleware.CSRF)
+			identityH.ProtectedRoutes(r) // who am I, sign out, and the admin's customer list
+
+			// Everything below is a shop's own data. TenantScope lets in the shop's owner and its
+			// kasir seats only, and pins every query to their shop. The platform admin is turned away.
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.TenantScope)
+				identityH.OwnerRoutes(r)
+				settingsH.Routes(r)
+				catalogH.Routes(r)
+				salesH.Routes(r)
+				reportH.Routes(r)
+			})
 		})
 	})
 

@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"sohopos/internal/app"
-	"sohopos/internal/platform/config"
-	"sohopos/internal/platform/database"
-	"sohopos/migrations"
+	"chloropos/internal/app"
+	"chloropos/internal/platform/config"
+	"chloropos/internal/platform/database"
+	"chloropos/migrations"
 )
 
 func main() {

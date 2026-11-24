@@ -13,20 +13,24 @@ import (
 
 const (
 	CookieName    = "pos_session"
-	RoleOwner     = "owner"
-	RoleCashier   = "cashier"
-	tokenIssuer   = "sohopos"
-	tokenAudience = "sohopos-web"
+	RoleAdmin     = "admin"   // the company running the service: manages customers, never sees their data
+	RoleOwner     = "owner"   // a SOHO customer, and the tenant of everything in their shop
+	RoleCashier   = "cashier" // one kasir seat inside an owner's shop
+	tokenIssuer   = "chloropos"
+	tokenAudience = "chloropos-web"
 )
 
-// Claims is the signed session. CSRF is a random per-session value the browser must echo
-// back in the X-CSRF-Token header on every state-changing request.
+// Claims is the signed session. Subject is the account (an admin, an owner, or a kasir seat),
+// TID is the tenant it acts for (empty for the admin). CSRF is a random per-session value the
+// browser must echo back in the X-CSRF-Token header on every state-changing request.
 type Claims struct {
 	Role string `json:"role"`
+	TID  string `json:"tid,omitempty"`
 	CSRF string `json:"csrf"`
 	jwt.RegisteredClaims
 }
 
+// UserID is the signed-in account: the admin's or owner's user ID, or the kasir seat's ID.
 func (c *Claims) UserID() (uuid.UUID, error) { return uuid.Parse(c.Subject) }
 
 type TokenManager struct {
@@ -49,18 +53,24 @@ func NewTokenManager(secret []byte, ttl time.Duration) *TokenManager {
 	}
 }
 
-func (m *TokenManager) Issue(userID uuid.UUID, role string) (token, csrf string, expires time.Time, err error) {
+// Issue signs a session for subject. Pass uuid.Nil as tenantID for the platform admin.
+func (m *TokenManager) Issue(subject uuid.UUID, role string, tenantID uuid.UUID) (token, csrf string, expires time.Time, err error) {
 	csrf, err = RandomToken(32)
 	if err != nil {
 		return "", "", time.Time{}, err
 	}
 	now := time.Now()
 	expires = now.Add(m.ttl)
+	var tid string
+	if tenantID != uuid.Nil {
+		tid = tenantID.String()
+	}
 	claims := Claims{
 		Role: role,
+		TID:  tid,
 		CSRF: csrf,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   userID.String(),
+			Subject:   subject.String(),
 			Issuer:    tokenIssuer,
 			Audience:  jwt.ClaimStrings{tokenAudience},
 			IssuedAt:  jwt.NewNumericDate(now),

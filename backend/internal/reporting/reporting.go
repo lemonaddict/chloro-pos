@@ -1,4 +1,4 @@
-// Package reporting is the read side: daily revenue and fast-moving items.
+// Package reporting is the read side: daily sales, best sellers and the Excel export.
 //
 // It reads the orders tables directly, which is fine inside the monolith. If this module is
 // ever extracted, feed it from order events instead and drop the cross-module reads.
@@ -6,15 +6,20 @@ package reporting
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"sohopos/internal/platform/auth"
-	"sohopos/internal/platform/database"
-	"sohopos/internal/platform/httpx"
-	"sohopos/internal/platform/middleware"
+	"chloropos/internal/platform/apperr"
+	"chloropos/internal/platform/auth"
+	"chloropos/internal/platform/database"
+	"chloropos/internal/platform/httpx"
+	"chloropos/internal/platform/middleware"
+	"chloropos/internal/platform/tenancy"
 )
 
 type Totals struct {
@@ -44,21 +49,27 @@ type Summary struct {
 type Repository interface {
 	Summary(ctx context.Context, tz string, days int) (*Summary, error)
 	CheckTimezone(ctx context.Context, tz string) error
+	ExportData(ctx context.Context, tz string, from, to time.Time) (*ExportData, error)
 }
 
 type Service struct {
 	repo Repository
+	tx   database.Transactor
 	tz   string
 }
 
-func NewService(repo Repository, tz string) *Service { return &Service{repo: repo, tz: tz} }
+func NewService(repo Repository, tx database.Transactor, tz string) *Service {
+	return &Service{repo: repo, tx: tx, tz: tz}
+}
 
 // CheckTimezone fails fast at startup if REPORT_TZ isn't a name PostgreSQL knows.
 func (s *Service) CheckTimezone(ctx context.Context) error { return s.repo.CheckTimezone(ctx, s.tz) }
 
 func (s *Service) Summary(ctx context.Context, days int) (*Summary, error) {
 	days = min(max(days, 1), 31)
-	sum, err := s.repo.Summary(ctx, s.tz, days)
+	sum, err := database.InTx(ctx, s.tx, func(ctx context.Context) (*Summary, error) {
+		return s.repo.Summary(ctx, s.tz, days)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +80,30 @@ func (s *Service) Summary(ctx context.Context, days int) (*Summary, error) {
 	return sum, nil
 }
 
-// ---- Postgres adapter ----
+// Export validates the date range (inclusive, shop-local days) and loads everything for the workbook.
+func (s *Service) Export(ctx context.Context, fromStr, toStr string) (*ExportData, error) {
+	from, err1 := time.Parse("2006-01-02", fromStr)
+	to, err2 := time.Parse("2006-01-02", toStr)
+	if err1 != nil || err2 != nil {
+		return nil, apperr.Invalid("bad_dates", "Isi tanggal mulai dan tanggal akhir.")
+	}
+	if from.After(to) {
+		return nil, apperr.Invalid("bad_range", "Tanggal mulai harus sebelum tanggal akhir.")
+	}
+	if to.Sub(from) > 365*24*time.Hour {
+		return nil, apperr.Invalid("range_too_long", "Rentang tanggal maksimal 1 tahun.")
+	}
+	d, err := database.InTx(ctx, s.tx, func(ctx context.Context) (*ExportData, error) {
+		return s.repo.ExportData(ctx, s.tz, from, to)
+	})
+	if err != nil {
+		return nil, err
+	}
+	d.From, d.To = fromStr, toStr
+	return d, nil
+}
+
+// ---- Postgres adapter (summary) ----
 
 type PGRepository struct{ db *database.Store }
 
@@ -83,6 +117,10 @@ func (r *PGRepository) CheckTimezone(ctx context.Context, tz string) error {
 // Days are the shop's local days (REPORT_TZ), including days with no sales, so the chart has no gaps.
 // The join uses a created_at range, which lets PostgreSQL use the orders_completed_created_idx index.
 func (r *PGRepository) Summary(ctx context.Context, tz string, days int) (*Summary, error) {
+	tid, err := tenancy.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
 	db := r.db.DB(ctx)
 	sum := &Summary{Daily: make([]DayTotal, 0, days), TopItems: make([]TopItem, 0, 5)}
 
@@ -95,11 +133,12 @@ func (r *PGRepository) Summary(ctx context.Context, tz string, days int) (*Summa
 		SELECT to_char(d.day, 'YYYY-MM-DD'), COALESCE(SUM(o.total_cents), 0)::bigint, COUNT(o.id)::bigint
 		  FROM days d
 		  LEFT JOIN orders o
-		    ON o.status = 'completed'
+		    ON o.tenant_id = $3::uuid
+		   AND o.status = 'completed'
 		   AND o.created_at >= (d.day::timestamp AT TIME ZONE $1::text)
 		   AND o.created_at <  ((d.day + 1)::timestamp AT TIME ZONE $1::text)
 		 GROUP BY d.day
-		 ORDER BY d.day`, tz, days)
+		 ORDER BY d.day`, tz, days, tid)
 	if err != nil {
 		return nil, err
 	}
@@ -120,12 +159,14 @@ func (r *PGRepository) Summary(ctx context.Context, tz string, days int) (*Summa
 		SELECT oi.product_id, MAX(oi.product_name), SUM(oi.quantity)::bigint, SUM(oi.line_total_cents)::bigint
 		  FROM order_items oi
 		  JOIN orders o ON o.id = oi.order_id
-		 WHERE o.status = 'completed'
+		 WHERE o.tenant_id = $3::uuid
+		   AND oi.tenant_id = $3::uuid
+		   AND o.status = 'completed'
 		   AND o.created_at >= ((date_trunc('day', now() AT TIME ZONE $1::text)
 		                         - make_interval(days => $2::int - 1)) AT TIME ZONE $1::text)
 		 GROUP BY oi.product_id
 		 ORDER BY 3 DESC, 2
-		 LIMIT 5`, tz, days)
+		 LIMIT 5`, tz, days, tid)
 	if err != nil {
 		return nil, err
 	}
@@ -146,9 +187,11 @@ type Handler struct{ svc *Service }
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
-// Routes are mounted behind Authenticate + CSRF. Reports are owner-only.
+// Routes are mounted behind Authenticate, CSRF and TenantScope. Reports are for the shop's owner only.
 func (h *Handler) Routes(r chi.Router) {
-	r.With(middleware.RequireRole(auth.RoleOwner)).Get("/reports/summary", h.summary)
+	admin := middleware.RequireRole(auth.RoleOwner)
+	r.With(admin).Get("/reports/summary", h.summary)
+	r.With(admin).Get("/reports/export", h.export)
 }
 
 func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
@@ -158,4 +201,19 @@ func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, sum)
+}
+
+func (h *Handler) export(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	data, err := h.svc.Export(r.Context(), q.Get("from"), q.Get("to"))
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	// from/to were parsed as dates above, so the filename is safe to build from them.
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="chloropos-laporan-%s_%s.xlsx"`, data.From, data.To))
+	if err := writeWorkbook(w, data); err != nil {
+		slog.ErrorContext(r.Context(), "export failed", "err", err) // headers are already sent
+	}
 }

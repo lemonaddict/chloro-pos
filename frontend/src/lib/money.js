@@ -1,31 +1,28 @@
-// Amounts travel as integer minor units (cents). Convert only at the screen edge.
-const currency = import.meta.env.VITE_CURRENCY || 'USD';
-const formatter = new Intl.NumberFormat(undefined, { style: 'currency', currency });
+// Amounts travel as integers in minor units (x100) so the API never handles fractions.
+// Rupiah has no sen in practice, so on screen everything is whole rupiah.
+const idr = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0, maximumFractionDigits: 0 });
+const compact = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', notation: 'compact', maximumFractionDigits: 1 });
 
-export const money = (cents) => formatter.format(cents / 100);
+export const money = (minor) => idr.format(minor / 100);
+export const moneyCompact = (minor) => compact.format(minor / 100);
 
-// "12.5" or "12,50" -> 1250. Anything unreadable becomes 0.
-export function toCents(text) {
-  const n = Number.parseFloat(String(text).replace(',', '.'));
-  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : 0;
+/** Minor units -> plain digits for an input box: 1500000 -> "15000". */
+export const toInput = (minor) => String(Math.round(minor / 100));
+
+/** What a person types ("15000", "15.000", "Rp 15.000,00") -> minor units. Anything unreadable is 0. */
+export function toMinor(text) {
+  const digits = String(text).replace(/,\d{1,2}$/, '').replace(/\D/g, '').slice(0, 12);
+  return digits ? Number(digits) * 100 : 0;
 }
 
-// Up to three round amounts above the total that a customer is likely to hand over.
-export function cashSuggestions(totalCents) {
-  const steps = [1, 5, 10, 20, 50, 100, 500, 1000, 5000, 10000, 50000, 100000].map((s) => s * 100);
+/** Up to three round amounts above the total that a customer is likely to hand over. */
+export function cashSuggestions(totalMinor) {
+  const steps = [1000, 2000, 5000, 10000, 20000, 50000, 100000].map((rp) => rp * 100);
   const out = new Set();
   for (const step of steps) {
-    const rounded = Math.ceil(totalCents / step) * step;
-    if (rounded > totalCents) out.add(rounded);
+    const rounded = Math.ceil(totalMinor / step) * step;
+    if (rounded > totalMinor) out.add(rounded);
     if (out.size === 3) break;
   }
   return [...out];
 }
-
-// Short form for chart labels: $1.2K instead of $1,234.00.
-const compact = new Intl.NumberFormat(undefined, { style: 'currency', currency, notation: 'compact', maximumFractionDigits: 1 });
-export const moneyCompact = (cents) => compact.format(cents / 100);
-
-// The sign-in page shows a sample receipt. Scale its prices so a coffee doesn't cost "Rp 3,50".
-const SAMPLE_SCALE = { IDR: 8000, JPY: 140, KRW: 1300, VND: 24000, INR: 80, PHP: 55, THB: 35 };
-export const sampleMoney = (major) => money(Math.round(major * (SAMPLE_SCALE[currency.toUpperCase()] ?? 1) * 100));

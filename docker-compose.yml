@@ -1,6 +1,6 @@
-# Optional. Starts PostgreSQL and the app (Go API + built Svelte frontend) with one command:
+# Opsional. Menjalankan PostgreSQL dan aplikasi (API Go + frontend Svelte yang sudah di-build) dengan satu perintah:
 #   docker compose up --build
-# Then open http://localhost:8080
+# Lalu buka http://localhost:8080
 services:
   db:
     image: postgres:17-alpine
@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_DB: sohopos
       POSTGRES_USER: sohopos
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?isi POSTGRES_PASSWORD di .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -16,7 +16,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    # No published ports: only the app container can reach the database.
+    # Tidak ada port yang dibuka: hanya container aplikasi yang bisa menjangkau database.
 
   app:
     build: .
@@ -27,11 +27,11 @@ services:
     environment:
       APP_ENV: production
       DATABASE_URL: postgres://sohopos:${POSTGRES_PASSWORD}@db:5432/sohopos?sslmode=disable
-      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_SECRET: ${JWT_SECRET:?isi JWT_SECRET di .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       REPORT_TZ: ${REPORT_TZ:-UTC}
-      BOOTSTRAP_OWNER_USERNAME: ${BOOTSTRAP_OWNER_USERNAME:-}
-      BOOTSTRAP_OWNER_PASSWORD: ${BOOTSTRAP_OWNER_PASSWORD:-}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
     ports:
       - "8080:8080"
     read_only: true

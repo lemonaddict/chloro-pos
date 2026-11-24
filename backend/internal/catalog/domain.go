@@ -24,6 +24,37 @@ type Product struct {
 	StockQty          int        `json:"stock_qty"`
 	LowStockThreshold int        `json:"low_stock_threshold"`
 	IsActive          bool       `json:"is_active"`
+	StockStatus       string     `json:"stock_status"` // ok, low or out
+}
+
+func stockStatus(qty, threshold int) string {
+	switch {
+	case qty <= 0:
+		return "out"
+	case qty <= threshold:
+		return "low"
+	default:
+		return "ok"
+	}
+}
+
+// CashierProduct is what a cashier's screen receives: price and availability, never stock counts.
+type CashierProduct struct {
+	ID           uuid.UUID  `json:"id"`
+	CategoryID   *uuid.UUID `json:"category_id"`
+	CategoryName *string    `json:"category_name"`
+	SKU          string     `json:"sku"`
+	Barcode      *string    `json:"barcode"`
+	Name         string     `json:"name"`
+	PriceCents   int64      `json:"price_cents"`
+	StockStatus  string     `json:"stock_status"`
+}
+
+func (p Product) ForCashier() CashierProduct {
+	return CashierProduct{
+		ID: p.ID, CategoryID: p.CategoryID, CategoryName: p.CategoryName, SKU: p.SKU, Barcode: p.Barcode,
+		Name: p.Name, PriceCents: p.PriceCents, StockStatus: p.StockStatus,
+	}
 }
 
 type Category struct {

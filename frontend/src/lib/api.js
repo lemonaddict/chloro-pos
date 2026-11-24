@@ -13,29 +13,35 @@ export class ApiError extends Error {
   }
 }
 
-async function request(method, path, body) {
+const NETWORK = 'Tidak bisa menghubungi server. Periksa koneksi lalu coba lagi.';
+const GENERIC = 'Terjadi kesalahan. Coba lagi.';
+
+async function send(method, path, body) {
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET') headers['X-CSRF-Token'] = csrfToken;
-
-  let res;
   try {
-    res = await fetch(`/api/v1${path}`, {
+    return await fetch(`/api/v1${path}`, {
       method,
       headers,
       credentials: 'same-origin',
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    throw new ApiError(0, 'network', 'Can’t reach the server. Check the connection and try again.');
+    throw new ApiError(0, 'network', NETWORK);
   }
+}
 
-  const data = res.status === 204 ? null : await res.json().catch(() => null);
-  if (!res.ok) {
-    if (res.status === 401 && path !== '/auth/login') onUnauthorized();
-    throw new ApiError(res.status, data?.error?.code ?? 'error', data?.error?.message ?? 'Something went wrong. Try again.');
-  }
-  return data;
+async function fail(res, path) {
+  const data = await res.json().catch(() => null);
+  if (res.status === 401 && !path.startsWith('/auth/login')) onUnauthorized();
+  return new ApiError(res.status, data?.error?.code ?? 'error', data?.error?.message ?? GENERIC);
+}
+
+async function request(method, path, body) {
+  const res = await send(method, path, body);
+  if (!res.ok) throw await fail(res, path);
+  return res.status === 204 ? null : await res.json().catch(() => null);
 }
 
 export const api = {
@@ -43,3 +49,17 @@ export const api = {
   post: (path, body) => request('POST', path, body ?? {}),
   put: (path, body) => request('PUT', path, body),
 };
+
+/** Downloads a file the API generates (for example the Excel report). */
+export async function download(path, filename) {
+  const res = await send('GET', path);
+  if (!res.ok) throw await fail(res, path);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}

@@ -6,14 +6,20 @@ import (
 	"io/fs"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const migrationLockID = 7270001
 
-// Migrate applies unapplied *.sql files in name order, each in its own transaction.
+// Migrate applies unapplied migrations in name order, each in its own transaction.
 // An advisory lock keeps two app instances from migrating at once.
+//
+// File names: NNNN_name.up.sql applies a migration. NNNN_name.down.sql undoes it and is never run
+// here: apply it by hand (psql -f) when you really want to roll back. The older NNNN_name.sql
+// form still counts as an "up" file. A migration's version is its name without .up.sql or .sql,
+// so renaming 0001_schema.sql to 0001_schema.up.sql does not make it run a second time.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -40,8 +46,14 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
 	sort.Strings(files)
 
 	for _, name := range files {
+		if strings.HasSuffix(name, ".down.sql") {
+			continue
+		}
+		version := strings.TrimSuffix(strings.TrimSuffix(name, ".sql"), ".up")
+		// Rows written before the rename hold the file name (with .sql), so match those too.
 		var done bool
-		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, name).Scan(&done); err != nil {
+		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = ANY($1))`,
+			[]string{version, name, version + ".sql"}).Scan(&done); err != nil {
 			return err
 		}
 		if done {
@@ -59,14 +71,14 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("migration %s: %w", name, err)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, name); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
 			_ = tx.Rollback(ctx)
 			return err
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
-		slog.Info("migration applied", "version", name)
+		slog.Info("migration applied", "version", version)
 	}
 	return nil
 }

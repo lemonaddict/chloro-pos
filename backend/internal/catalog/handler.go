@@ -6,10 +6,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"sohopos/internal/platform/apperr"
-	"sohopos/internal/platform/auth"
-	"sohopos/internal/platform/httpx"
-	"sohopos/internal/platform/middleware"
+	"chloropos/internal/platform/apperr"
+	"chloropos/internal/platform/auth"
+	"chloropos/internal/platform/httpx"
+	"chloropos/internal/platform/middleware"
 )
 
 type Handler struct{ svc *Service }
@@ -31,7 +31,7 @@ func (h *Handler) Routes(r chi.Router) {
 func actor(r *http.Request) (uuid.UUID, string, error) {
 	claims, ok := auth.FromContext(r.Context())
 	if !ok {
-		return uuid.Nil, "", apperr.Unauthorized("unauthenticated", "Sign in to continue.")
+		return uuid.Nil, "", apperr.Unauthorized("unauthenticated", "Silakan masuk untuk melanjutkan.")
 	}
 	id, err := claims.UserID()
 	return id, claims.Role, err
@@ -54,7 +54,7 @@ func (h *Handler) listProducts(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("category_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			httpx.WriteError(w, r, apperr.Invalid("invalid_category", "That category isn’t valid."))
+			httpx.WriteError(w, r, apperr.Invalid("invalid_category", "Kategori tidak valid."))
 			return
 		}
 		f.CategoryID = &id
@@ -62,6 +62,14 @@ func (h *Handler) listProducts(w http.ResponseWriter, r *http.Request) {
 	list, err := h.svc.ListProducts(r.Context(), f)
 	if err != nil {
 		httpx.WriteError(w, r, err)
+		return
+	}
+	if role != auth.RoleOwner { // cashiers get prices and availability only, never stock counts
+		view := make([]CashierProduct, 0, len(list))
+		for _, p := range list {
+			view = append(view, p.ForCashier())
+		}
+		httpx.JSON(w, http.StatusOK, view)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, list)

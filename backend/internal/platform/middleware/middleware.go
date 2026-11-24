@@ -9,7 +9,7 @@ import (
 
 	chimw "github.com/go-chi/chi/v5/middleware"
 
-	"sohopos/internal/platform/httpx"
+	"chloropos/internal/platform/httpx"
 )
 
 // SecurityHeaders sets the baseline response headers. The CSP has no 'unsafe-inline', so the
@@ -70,8 +70,8 @@ func OriginCheck(allowed []string) func(http.Handler) http.Handler {
 				return
 			}
 			slog.WarnContext(r.Context(), "origin rejected", "origin", origin, "host", r.Host,
-				"hint", "Origin and Host differ. Behind a proxy, keep the Host header or list the origin in ALLOWED_ORIGINS.")
-			httpx.Error(w, http.StatusForbidden, "bad_origin", "This request came from an unexpected site.")
+				"hint", "Origin dan Host berbeda. Di belakang proxy, pertahankan header Host atau daftarkan origin di ALLOWED_ORIGINS.")
+			httpx.Error(w, http.StatusForbidden, "bad_origin", "Permintaan ini berasal dari situs yang tidak dikenal.")
 		})
 	}
 }
