@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
 
@@ -49,7 +48,17 @@ func New(ctx context.Context, cfg config.Config, pool *pgxpool.Pool) (http.Handl
 
 	// Modules: repository -> service (use cases) -> handler.
 	identitySvc := identity.NewService(identity.NewPGRepository(store), store, tokens)
-	identityH := identity.NewHandler(identitySvc, cfg.CookieSecure, loginUserLimit)
+	cookies, err := auth.NewCookiePolicy(auth.CookieOptions{
+		Production:     cfg.Env == "production",
+		Secure:         cfg.CookieSecure,
+		SameSite:       cfg.CookieSameSite,
+		Domain:         cfg.CookieDomain,
+		AllowedOrigins: cfg.AllowedOrigins,
+	})
+	if err != nil {
+		return nil, err
+	}
+	identityH := identity.NewHandler(identitySvc, cookies, loginUserLimit)
 	catalogH := catalog.NewHandler(catalog.NewService(catalog.NewPGRepository(store), store))
 
 	settingsSvc := settings.NewService(settings.NewPGRepository(store), store)
@@ -80,13 +89,7 @@ func New(ctx context.Context, cfg config.Config, pool *pgxpool.Pool) (http.Handl
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID, middleware.RequestLogger, chimw.Recoverer, middleware.SecurityHeaders(cfg.CookieSecure))
 	if len(cfg.AllowedOrigins) > 0 { // same-origin deployments (the default) need no CORS at all
-		r.Use(cors.Handler(cors.Options{
-			AllowedOrigins:   cfg.AllowedOrigins,
-			AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodOptions},
-			AllowedHeaders:   []string{"Content-Type", "X-CSRF-Token"},
-			AllowCredentials: true,
-			MaxAge:           600,
-		}))
+		r.Use(middleware.CORS(cfg.AllowedOrigins))
 	}
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -125,8 +128,12 @@ func New(ctx context.Context, cfg config.Config, pool *pgxpool.Pool) (http.Handl
 		})
 	})
 
-	if cfg.StaticDir != "" { // production: Go serves the built Svelte app too
+	if cfg.StaticDir != "" { // all-in-one image: Go serves the built Svelte app too
 		r.NotFound(spaHandler(cfg.StaticDir))
+	} else { // API-only (the frontend is a separate Static Site): unknown paths answer in the API's JSON format
+		r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
+			httpx.Error(w, http.StatusNotFound, "not_found", "Tidak ditemukan.")
+		})
 	}
 	return r, nil
 }

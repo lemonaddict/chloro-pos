@@ -7,9 +7,13 @@
     <meta name="theme-color" content="#059669" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>ChloroPOS</title>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
-    <div id="app"></div>
+    <!-- Shown until the bundle starts. Same markup as the loading screen in App.svelte. -->
+    <div id="app">
+      <div class="grid min-h-dvh place-items-center text-muted" role="status">Memuat…</div>
+    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

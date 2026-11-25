@@ -1,9 +1,7 @@
 <script>
-  import { onMount } from 'svelte';
   import { session, signOut } from '../lib/session.svelte.js';
   import { settings } from '../lib/settings.svelte.js';
   import { router, navigate } from '../lib/router.svelte.js';
-  import { initTheme } from '../lib/theme.svelte.js';
   import Logo from './Logo.svelte';
   import Icon from './Icon.svelte';
 
@@ -26,8 +24,6 @@
   // A receipt without an address or phone number isn't a proper nota. Nudge the owner until it's filled in.
   const incomplete = $derived(role === 'owner' && settings.loaded && (!settings.address || !settings.phone));
   const onSettings = $derived(router.path === '/pengaturan');
-
-  onMount(initTheme);
 
   function go(event, path) {
     event.preventDefault();

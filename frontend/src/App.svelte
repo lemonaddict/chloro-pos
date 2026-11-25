@@ -1,8 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { session, restoreSession } from './lib/session.svelte.js';
-  import { loadSettings } from './lib/settings.svelte.js';
-  import { initTheme } from './lib/theme.svelte.js';
+  import { loadSettings, settings } from './lib/settings.svelte.js';
   import { router } from './lib/router.svelte.js';
   import AppShell from './components/AppShell.svelte';
   import Login from './routes/Login.svelte';
@@ -35,23 +34,26 @@
   };
   const home = { admin: '/pengguna', owner: '/', cashier: '/' };
 
-  onMount(() => {
-    initTheme();
-    restoreSession();
-  });
+  // The theme is applied before anything renders (see main.js), so only the session is restored here.
+  onMount(restoreSession);
 
   // Receipts and the cart need the shop's profile and tax rules as soon as someone from a shop is signed in.
   $effect(() => {
     if (session.user && session.user.role !== 'admin') loadSettings();
   });
 
+  // Hold the "Memuat…" screen until we know who is signed in AND, for a shop account, the shop's
+  // profile: the menu, the "lengkapi profil" banner and receipts all depend on it, so the shell
+  // appears once, finished, instead of jumping when the profile arrives.
+  const booting = $derived(!session.ready || (!!session.user && session.user.role !== 'admin' && !settings.loaded));
+
   const role = $derived(session.user?.role);
   const allowed = $derived(access[router.path]?.includes(role) ?? false);
   const Page = $derived(allowed ? routes[router.path] : routes[home[role] ?? '/']);
 </script>
 
-{#if !session.ready}
-  <div class="grid min-h-dvh place-items-center text-muted">Memuat…</div>
+{#if booting}
+  <div class="grid min-h-dvh place-items-center text-muted" role="status">Memuat…</div>
 {:else if !session.user}
   <Login />
 {:else}

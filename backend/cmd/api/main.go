@@ -63,7 +63,7 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("listening", "addr", cfg.HTTPAddr, "env", cfg.Env)
+		slog.Info("listening", "addr", cfg.HTTPAddr, "env", cfg.Env, "api_only", cfg.StaticDir == "")
 		errCh <- srv.ListenAndServe()
 	}()
 

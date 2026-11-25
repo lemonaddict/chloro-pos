@@ -1,0 +1,94 @@
+# Render Blueprint: ChloroPOS as two services.
+#   chloropos-api  Web Service  (Go, backend/Dockerfile, API only)
+#   chloropos-web  Static Site  (Svelte build from frontend/)
+# The database is Neon, outside Render: paste its connection string when asked (see README,
+# "Deploy 2 service di Render"). Validate this file with: render blueprints validate render.yaml
+#
+# Why there is no env group: the only values the two services share are the two URLs, and Render
+# ignores `sync: false` inside an environment group, so they are asked per service instead.
+
+services:
+  # ---------------------------------------------------------------- API
+  - type: web
+    name: chloropos-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /healthz
+    # `free` sleeps when idle (the first request then waits ~1 minute) and cannot run more than one
+    # instance. For real use pick a paid plan, e.g. 0.5c-512mb, and raise numInstances to scale out.
+    plan: free
+    numInstances: 1
+    autoDeployTrigger: commit
+    buildFilter:
+      paths:
+        - backend/**
+    envVars:
+      - key: APP_ENV
+        value: production
+      # Neon DIRECT connection string (host without "-pooler"), for a role that does not bypass
+      # row-level security. See the README.
+      - key: DATABASE_URL
+        sync: false
+      # Generated once. Every instance of the service shares it, which is what keeps a session
+      # valid on whichever instance answers. Rotating it signs everyone out.
+      - key: JWT_SECRET
+        generateValue: true
+      # The Static Site's origin, exactly as the browser shows it: https://host, no trailing slash.
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      # auto: SameSite=None for the listed frontend on another origin (default *.onrender.com URLs).
+      # With a custom parent domain (app.example.com + api.example.com) use lax instead.
+      - key: COOKIE_SAMESITE
+        value: auto
+      - key: REPORT_TZ
+        value: Asia/Jakarta
+      # First deploy only: creates the platform admin. Delete both after the first sign-in.
+      - key: BOOTSTRAP_ADMIN_USERNAME
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      # STATIC_DIR is deliberately not set: no value means API-only mode.
+
+  # ------------------------------------------------------------- Frontend
+  - type: web
+    name: chloropos-web
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: ./frontend/dist
+    autoDeployTrigger: commit
+    buildFilter:
+      paths:
+        - frontend/**
+    envVars:
+      # Read at BUILD time and baked into the bundle: change it and redeploy the site.
+      # The API's origin only: https://host, no trailing slash, no /api/v1.
+      - key: VITE_API_BASE
+        sync: false
+      - key: NODE_VERSION
+        value: "22"
+    routes:
+      # Client-side routes such as /stok must load index.html on refresh.
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      # The Content-Security-Policy is added to index.html at build time (frontend/vite.config.js),
+      # because it must name the API origin. These cover what a <meta> tag cannot.
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(self), microphone=(), geolocation=()
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable

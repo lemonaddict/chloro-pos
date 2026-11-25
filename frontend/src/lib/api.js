@@ -1,4 +1,23 @@
 // One small fetch wrapper: JSON in, JSON out, CSRF header on every change, friendly errors.
+
+// Where the API lives. Empty means the same origin as the page: the Vite proxy in development, or
+// the Go server serving the built app. Set VITE_API_BASE (build time, no trailing slash, for
+// example https://api.example.com) when the app is a Static Site and the API is another service.
+export const API_BASE = (import.meta.env.VITE_API_BASE ?? '').trim().replace(/\/+$/, '');
+
+function isCrossOrigin(base) {
+  if (!base) return false;
+  try {
+    return new URL(base, location.origin).origin !== location.origin;
+  } catch {
+    return true;
+  }
+}
+
+// Another origin only receives the session cookie if the request opts in with 'include'.
+export const CROSS_ORIGIN = isCrossOrigin(API_BASE);
+const CREDENTIALS = CROSS_ORIGIN ? 'include' : 'same-origin';
+
 let csrfToken = '';
 let onUnauthorized = () => {};
 
@@ -15,16 +34,17 @@ export class ApiError extends Error {
 
 const NETWORK = 'Tidak bisa menghubungi server. Periksa koneksi lalu coba lagi.';
 const GENERIC = 'Terjadi kesalahan. Coba lagi.';
+const NOT_THE_API = 'Alamat server tidak menjawab seperti API ChloroPOS. Hubungi admin untuk memeriksa pengaturan alamat API.';
 
 async function send(method, path, body) {
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET') headers['X-CSRF-Token'] = csrfToken;
   try {
-    return await fetch(`/api/v1${path}`, {
+    return await fetch(`${API_BASE}/api/v1${path}`, {
       method,
       headers,
-      credentials: 'same-origin',
+      credentials: CREDENTIALS,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -41,7 +61,13 @@ async function fail(res, path) {
 async function request(method, path, body) {
   const res = await send(method, path, body);
   if (!res.ok) throw await fail(res, path);
-  return res.status === 204 ? null : await res.json().catch(() => null);
+  if (res.status === 204) return null;
+  // A static host answers an unknown path with index.html (status 200). That means the API base is
+  // wrong or missing; say so instead of treating the page as an empty reply.
+  if (!(res.headers.get('content-type') ?? '').includes('application/json')) {
+    throw new ApiError(res.status, 'not_the_api', NOT_THE_API);
+  }
+  return await res.json().catch(() => null);
 }
 
 export const api = {

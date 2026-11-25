@@ -16,13 +16,13 @@ import (
 )
 
 type Handler struct {
-	svc          *Service
-	secureCookie bool
-	userLimiter  *middleware.RateLimiter // per-username brake, on top of the per-IP one on the route
+	svc         *Service
+	cookies     *auth.CookiePolicy      // SameSite, Secure and Domain of the session cookie
+	userLimiter *middleware.RateLimiter // per-username brake, on top of the per-IP one on the route
 }
 
-func NewHandler(svc *Service, secureCookie bool, userLimiter *middleware.RateLimiter) *Handler {
-	return &Handler{svc: svc, secureCookie: secureCookie, userLimiter: userLimiter}
+func NewHandler(svc *Service, cookies *auth.CookiePolicy, userLimiter *middleware.RateLimiter) *Handler {
+	return &Handler{svc: svc, cookies: cookies, userLimiter: userLimiter}
 }
 
 // PublicRoutes need no session. ipLimit is the strict per-IP limiter for sign-in.
@@ -121,17 +121,8 @@ func audit(r *http.Request, action string, target uuid.UUID) {
 
 // ---- sign-in ----
 
-func (h *Handler) startSession(w http.ResponseWriter, sess *Session) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     auth.CookieName,
-		Value:    sess.Token,
-		Path:     "/",
-		Expires:  sess.ExpiresAt,
-		MaxAge:   int(time.Until(sess.ExpiresAt).Seconds()),
-		HttpOnly: true,
-		Secure:   h.secureCookie,
-		SameSite: http.SameSiteStrictMode,
-	})
+func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, sess *Session) {
+	h.cookies.Set(w, r, sess.Token, sess.ExpiresAt)
 	httpx.JSON(w, http.StatusOK, sessionView{User: toIdentityView(sess.Identity), CSRFToken: sess.CSRF})
 }
 
@@ -153,7 +144,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, err)
 		return
 	}
-	h.startSession(w, sess)
+	h.startSession(w, r, sess)
 }
 
 // loginCashier has its own per-username bucket, so someone hammering a shop's kasir sign-in
@@ -176,24 +167,24 @@ func (h *Handler) loginCashier(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, err)
 		return
 	}
-	h.startSession(w, sess)
+	h.startSession(w, r, sess)
 }
 
-func (h *Handler) logout(w http.ResponseWriter, _ *http.Request) {
-	h.clearCookie(w)
+func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	h.cookies.Clear(w, r)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.FromContext(r.Context())
 	if !ok {
-		h.clearCookie(w)
+		h.cookies.Clear(w, r)
 		httpx.Error(w, http.StatusUnauthorized, "unauthenticated", "Sesi sudah berakhir. Silakan masuk lagi.")
 		return
 	}
 	who, err := h.svc.Me(r.Context(), claims)
 	if err != nil {
-		h.clearCookie(w)
+		h.cookies.Clear(w, r)
 		httpx.WriteError(w, r, err)
 		return
 	}
@@ -363,11 +354,4 @@ func (h *Handler) resetSeatCode(w http.ResponseWriter, r *http.Request) {
 	}
 	audit(r, "cashier.code_reset", id)
 	httpx.JSON(w, http.StatusOK, seatCodeView{seatView: toSeatView(seat), Code: code})
-}
-
-func (h *Handler) clearCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name: auth.CookieName, Value: "", Path: "/", MaxAge: -1,
-		HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode,
-	})
 }

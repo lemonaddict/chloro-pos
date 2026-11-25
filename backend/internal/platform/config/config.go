@@ -4,6 +4,8 @@ package config
 import (
 	"bufio"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -19,8 +21,10 @@ type Config struct {
 	JWTSecret      []byte
 	SessionTTL     time.Duration
 	CookieSecure   bool
+	CookieSameSite string // auto | strict | lax | none, checked by auth.NewCookiePolicy
+	CookieDomain   string // empty = host-only cookie
 	AllowedOrigins []string
-	StaticDir      string
+	StaticDir      string // empty = API-only: no frontend is served
 	ReportTZ       string
 
 	// Optional: creates the platform admin (the company) when no admin exists yet.
@@ -32,16 +36,24 @@ func Load() (Config, error) {
 	loadDotEnv(".env")
 	loadDotEnv("../.env")
 
+	env := get("APP_ENV", "development")
+	origins, err := parseOrigins(os.Getenv("ALLOWED_ORIGINS"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	c := Config{
-		Env:                    get("APP_ENV", "development"),
-		HTTPAddr:               get("HTTP_ADDR", ":8080"),
+		Env:                    env,
+		HTTPAddr:               httpAddr(env),
 		DatabaseURL:            os.Getenv("DATABASE_URL"),
 		DBMaxConns:             int32(getInt("DB_MAX_CONNS", 10)),
 		DBMinConns:             int32(getInt("DB_MIN_CONNS", 2)),
 		JWTSecret:              []byte(os.Getenv("JWT_SECRET")),
 		SessionTTL:             time.Duration(getInt("SESSION_HOURS", 10)) * time.Hour,
 		CookieSecure:           getBool("COOKIE_SECURE", true),
-		AllowedOrigins:         splitCSV(os.Getenv("ALLOWED_ORIGINS")),
+		CookieSameSite:         get("COOKIE_SAMESITE", "auto"),
+		CookieDomain:           strings.TrimSpace(os.Getenv("COOKIE_DOMAIN")),
+		AllowedOrigins:         origins,
 		StaticDir:              os.Getenv("STATIC_DIR"),
 		ReportTZ:               get("REPORT_TZ", "Asia/Jakarta"),
 		BootstrapAdminUsername: first("BOOTSTRAP_ADMIN_USERNAME", "BOOTSTRAP_OWNER_USERNAME"),
@@ -91,6 +103,35 @@ func getBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+// httpAddr: an explicit HTTP_ADDR wins. In production, hosts such as Render say which port to use
+// through PORT. Outside production PORT is ignored, because it is often set for other tools.
+func httpAddr(env string) string {
+	if v := os.Getenv("HTTP_ADDR"); v != "" {
+		return v
+	}
+	if p := os.Getenv("PORT"); p != "" && env == "production" {
+		return ":" + p
+	}
+	return ":8080"
+}
+
+// parseOrigins turns "https://app.example.com/, http://localhost:5173" into exact origins
+// (scheme://host[:port]). The list is matched literally against the browser's Origin header and
+// every entry may send the session cookie, so a wildcard or anything with a path is an error.
+func parseOrigins(csv string) ([]string, error) {
+	var out []string
+	for _, raw := range splitCSV(csv) {
+		u, err := url.Parse(strings.TrimRight(raw, "/"))
+		if err != nil || strings.Contains(raw, "*") ||
+			(u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+			u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+			return nil, fmt.Errorf("ALLOWED_ORIGINS entry %q must look like https://app.example.com (scheme, host, optional port; no path, no wildcard)", raw)
+		}
+		out = append(out, u.Scheme+"://"+strings.ToLower(u.Host))
+	}
+	return out, nil
 }
 
 func splitCSV(s string) []string {
